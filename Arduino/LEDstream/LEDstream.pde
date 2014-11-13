@@ -43,204 +43,205 @@
 // --------------------------------------------------------------------
 
 #include <SPI.h>
+#include "Adafruit_WS2801.h"
 
-// LED pin for Adafruit 32u4 Breakout Board:
-//#define LED_DDR  DDRE
-//#define LED_PORT PORTE
-//#define LED_PIN  _BV(PORTE6)
-// LED pin for Teensy:
-//#define LED_DDR  DDRD
-//#define LED_PORT PORTD
-//#define LED_PIN  _BV(PORTD6)
-// LED pin for Arduino:
-#define LED_DDR  DDRB
-#define LED_PORT PORTB
-#define LED_PIN  _BV(PORTB5)
 
-// A 'magic word' (along with LED count & checksum) precedes each block
-// of LED data; this assists the microcontroller in syncing up with the
-// host-side software and properly issuing the latch (host I/O is
-// likely buffered, making usleep() unreliable for latch).  You may see
-// an initial glitchy frame or two until the two come into alignment.
-// The magic word can be whatever sequence you like, but each character
-// should be unique, and frequent pixel values like 0 and 255 are
-// avoided -- fewer false positives.  The host software will need to
-// generate a compatible header: immediately following the magic word
-// are three bytes: a 16-bit count of the number of LEDs (high byte
-// first) followed by a simple checksum value (high byte XOR low byte
-// XOR 0x55).  LED data follows, 3 bytes per LED, in order R, G, B,
-// where 0 = off and 255 = max brightness.
+Adafruit_WS2801 strip = Adafruit_WS2801(20, WS2801_GRB);// WS2801_GRB is the GRB order required by the 36mm pixels.
 
 static const uint8_t magic[] = {'A','d','a'};
+static const unsigned long serialTimeout = 15000; // 15 seconds
+	
 #define MAGICSIZE  sizeof(magic)
 #define HEADERSIZE (MAGICSIZE + 3)
-
 #define MODE_HEADER 0
 #define MODE_HOLD   1
 #define MODE_DATA   2
+#define spi_out(n) (void)SPI.transfer(n)
 
-// If no serial data is received for a while, the LEDs are shut off
-// automatically.  This avoids the annoying "stuck pixel" look when
-// quitting LED display programs on the host computer.
-static const unsigned long serialTimeout = 15000; // 15 seconds
+void colorWipe(uint32_t c, uint8_t wait);
 
-void setup()
-{
-  // Dirty trick: the circular buffer for serial data is 256 bytes,
-  // and the "in" and "out" indices are unsigned 8-bit types -- this
-  // much simplifies the cases where in/out need to "wrap around" the
-  // beginning/end of the buffer.  Otherwise there'd be a ton of bit-
-  // masking and/or conditional code every time one of these indices
-  // needs to change, slowing things down tremendously.
-  uint8_t
-    buffer[256],
-    indexIn       = 0,
-    indexOut      = 0,
-    mode          = MODE_HEADER,
-    hi, lo, chk, i, spiFlag;
-  int16_t
-    bytesBuffered = 0,
-    hold          = 0,
-    c;
-  int32_t
-    bytesRemaining;
-  unsigned long
-    startTime,
-    lastByteTime,
-    lastAckTime,
-    t;
+//static const unsigned long serialTimeout = 15000;
 
-  LED_DDR  |=  LED_PIN; // Enable output for LED
-  LED_PORT &= ~LED_PIN; // LED off
-
-  Serial.begin(115200); // Teensy/32u4 disregards baud rate; is OK!
-
-  SPI.begin();
-  SPI.setBitOrder(MSBFIRST);
-  SPI.setDataMode(SPI_MODE0);
-  SPI.setClockDivider(SPI_CLOCK_DIV16); // 1 MHz max, else flicker
-
-  // Issue test pattern to LEDs on startup.  This helps verify that
-  // wiring between the Arduino and LEDs is correct.  Not knowing the
-  // actual number of LEDs connected, this sets all of them (well, up
-  // to the first 25,000, so as not to be TOO time consuming) to red,
-  // green, blue, then off.  Once you're confident everything is working
-  // end-to-end, it's OK to comment this out and reprogram the Arduino.
-  uint8_t testcolor[] = { 0, 0, 0, 255, 0, 0 };
-  for(char n=3; n>=0; n--) {
-    for(c=0; c<25000; c++) {
-      for(i=0; i<3; i++) {
-        for(SPDR = testcolor[n + i]; !(SPSR & _BV(SPIF)); );
-      }
-    }
-    delay(1); // One millisecond pause = latch
-  }
-
+int LED_PIN = 13;
+void setup() {
+	
+	pinMode(LED_PIN, OUTPUT);
+  // put your setup code here, to run once:
+  strip.begin();
+  strip.show(); // Update LED contents, to start they are all 'off'
+  
+  uint8_t buffer[256], indexIn=0, indexOut=0, mode=MODE_HEADER, hi, lo, chk, i, spiFlag;
+  int16_t bytesBuffered = 0, hold=0, c;
+  int32_t bytesRemaining;
+  unsigned long startTime, lastByteTime, lastAckTime, t;
+  
+ //colorWipe(Color(255, 0, 0), 50);
+ //colorWipe(Color(0, 255, 0), 50);
+ //colorWipe(Color(0, 0, 255), 50);
+ //rainbow(50);
+ //rainbowCycle(1);
+  colorWipe(Color(0, 255, 0),10); //red
+  
+  //colorWipe(Color(0, 0, 255),10); //blue
+  Serial.begin(115200);
   Serial.print("Ada\n"); // Send ACK string to host
-
+  colorWipe(Color(255, 0, 0),10); //green
   startTime    = micros();
   lastByteTime = lastAckTime = millis();
-
-  // loop() is avoided as even that small bit of function overhead
-  // has a measurable impact on this code's overall throughput.
-
+  
   for(;;) {
+	  t = millis();
+	  if((bytesBuffered < 256) && ((c = Serial.read()) >= 0)) {
+		  buffer[indexIn++] = c;
+		  bytesBuffered++;
+		  lastByteTime = lastAckTime = t;
+		  colorWipe(Color(0, 0, 255), 10);//blue//remove
+	  } else {
+		  //colorWipe(Color(0, 0, 255), 10);//blue
+		  if((t - lastAckTime) > 1000) {
+			  Serial.print("Ada\n");
+			  lastAckTime = t;
+		  }
+		  if((t - lastByteTime) > serialTimeout) {
+			  for(c=0; c<32767; c++) {
+				  colorWipe(Color(0, 0, 0),0);
+			  }
+			  delay(1); // One millisecond pause = latch
+			  lastByteTime = t; // Reset counter
+		  }
+	    }
+		
+		switch(mode) {
+			case MODE_HEADER:
+			if(bytesBuffered >= HEADERSIZE) {
+				for(i=0; (i<MAGICSIZE) && (buffer[indexOut++] == magic[i++]););
+				if(i == MAGICSIZE) {
+					hi  = buffer[indexOut++];
+					lo  = buffer[indexOut++];
+					chk = buffer[indexOut++];
+					if(chk == (hi ^ lo ^ 0x55)) {
+						bytesRemaining = 3L * (256L * (long)hi + (long)lo + 1L);
+						bytesBuffered -= 3;
+						spiFlag        = 0;         // No data out yet
+						mode           = MODE_HOLD;
+				    } else {
+						// Checksum didn't match; search resumes after magic word.
+						indexOut  -= 3; // Rewind
+				      }
+		        }
+				bytesBuffered -= i;
+			}
+			break;
+			
+			case MODE_HOLD:
+			// Ostensibly "waiting for the latch from the prior frame
+			// to complete" mode, but may also revert to this mode when
+			// underrun prevention necessitates a delay.
+			if((micros() - startTime) < hold) break; // Still holding; keep buffering
+			// Latch/delay complete.  Advance to data-issuing mode...
+			//LED_PORT &= ~LED_PIN;  // LED off
+			 digitalWrite(LED_PIN, LOW);
+			mode=MODE_DATA; // ...and fall through (no break):
+			
+			case MODE_DATA:
+			//while(spiFlag && !(SPSR & _BV(SPIF))); // Wait for prior byte
+			if(bytesRemaining > 0) {
+				if(bytesBuffered > 0) {
+					spi_out((byte)buffer[indexOut++]);
+					bytesBuffered--;
+					bytesRemaining--;
+					spiFlag = 1;
+				}
+				if((bytesBuffered < 32) && (bytesRemaining > bytesBuffered)) {
+					startTime = micros();
+					hold      = 100 + (32 - bytesBuffered) * 10;
+					mode      = MODE_HOLD;
+				}
+				
+			} else {
+				startTime  = micros();
+				hold       = 1000;        // Latch duration = 1000 uS
+		//		LED_PORT  |= LED_PIN;     // LED on
+				digitalWrite(LED_PIN, HIGH);
+				mode       = MODE_HEADER;				
+			  }
+	    }// end switch
+  }// end for(;;)
+}//  end setup()
 
-    // Implementation is a simple finite-state machine.
-    // Regardless of mode, check for serial input each time:
-    t = millis();
-    if((bytesBuffered < 256) && ((c = Serial.read()) >= 0)) {
-      buffer[indexIn++] = c;
-      bytesBuffered++;
-      lastByteTime = lastAckTime = t; // Reset timeout counters
-    } else {
-      // No data received.  If this persists, send an ACK packet
-      // to host once every second to alert it to our presence.
-      if((t - lastAckTime) > 1000) {
-        Serial.print("Ada\n"); // Send ACK string to host
-        lastAckTime = t; // Reset counter
-      }
-      // If no data received for an extended time, turn off all LEDs.
-      if((t - lastByteTime) > serialTimeout) {
-        for(c=0; c<32767; c++) {
-          for(SPDR=0; !(SPSR & _BV(SPIF)); );
-        }
-        delay(1); // One millisecond pause = latch
-        lastByteTime = t; // Reset counter
-      }
-    }
+void loop() {
+  // put your main code here, to run repeatedly:
 
-    switch(mode) {
-
-     case MODE_HEADER:
-
-      // In header-seeking mode.  Is there enough data to check?
-      if(bytesBuffered >= HEADERSIZE) {
-        // Indeed.  Check for a 'magic word' match.
-        for(i=0; (i<MAGICSIZE) && (buffer[indexOut++] == magic[i++]););
-        if(i == MAGICSIZE) {
-          // Magic word matches.  Now how about the checksum?
-          hi  = buffer[indexOut++];
-          lo  = buffer[indexOut++];
-          chk = buffer[indexOut++];
-          if(chk == (hi ^ lo ^ 0x55)) {
-            // Checksum looks valid.  Get 16-bit LED count, add 1
-            // (# LEDs is always > 0) and multiply by 3 for R,G,B.
-            bytesRemaining = 3L * (256L * (long)hi + (long)lo + 1L);
-            bytesBuffered -= 3;
-            spiFlag        = 0;         // No data out yet
-            mode           = MODE_HOLD; // Proceed to latch wait mode
-          } else {
-            // Checksum didn't match; search resumes after magic word.
-            indexOut  -= 3; // Rewind
-          }
-        } // else no header match.  Resume at first mismatched byte.
-        bytesBuffered -= i;
-      }
-      break;
-
-     case MODE_HOLD:
-
-      // Ostensibly "waiting for the latch from the prior frame
-      // to complete" mode, but may also revert to this mode when
-      // underrun prevention necessitates a delay.
-
-      if((micros() - startTime) < hold) break; // Still holding; keep buffering
-
-      // Latch/delay complete.  Advance to data-issuing mode...
-      LED_PORT &= ~LED_PIN;  // LED off
-      mode      = MODE_DATA; // ...and fall through (no break):
-
-     case MODE_DATA:
-
-      while(spiFlag && !(SPSR & _BV(SPIF))); // Wait for prior byte
-      if(bytesRemaining > 0) {
-        if(bytesBuffered > 0) {
-          SPDR = buffer[indexOut++];   // Issue next byte
-          bytesBuffered--;
-          bytesRemaining--;
-          spiFlag = 1;
-        }
-        // If serial buffer is threatening to underrun, start
-        // introducing progressively longer pauses to allow more
-        // data to arrive (up to a point).
-        if((bytesBuffered < 32) && (bytesRemaining > bytesBuffered)) {
-          startTime = micros();
-          hold      = 100 + (32 - bytesBuffered) * 10;
-          mode      = MODE_HOLD;
-	}
-      } else {
-        // End of data -- issue latch:
-        startTime  = micros();
-        hold       = 1000;        // Latch duration = 1000 uS
-        LED_PORT  |= LED_PIN;     // LED on
-        mode       = MODE_HEADER; // Begin next header search
-      }
-    } // end switch
-  } // end for(;;)
 }
 
-void loop()
+
+void rainbow(uint8_t wait) {
+	int i, j;
+	
+	for (j=0; j < 256; j++) {     // 3 cycles of all 256 colors in the wheel
+		for (i=0; i < strip.numPixels(); i++) {
+			strip.setPixelColor(i, Wheel( (i + j) % 255));
+		}
+		strip.show();   // write all the pixels out
+		delay(wait);
+	}
+}
+
+// Slightly different, this one makes the rainbow wheel equally distributed
+// along the chain
+void rainbowCycle(uint8_t wait) {
+	int i, j;
+	
+	for (j=0; j < 256 * 5; j++) {     // 5 cycles of all 25 colors in the wheel
+		for (i=0; i < strip.numPixels(); i++) {
+			// tricky math! we use each pixel as a fraction of the full 96-color wheel
+			// (thats the i / strip.numPixels() part)
+			// Then add in j which makes the colors go around per pixel
+			// the % 96 is to make the wheel cycle around
+			strip.setPixelColor(i, Wheel( ((i * 256 / strip.numPixels()) + j) % 256) );
+		}
+		strip.show();   // write all the pixels out
+		delay(wait);
+	}
+}
+
+// fill the dots one after the other with said color
+// good for testing purposes
+void colorWipe(uint32_t c, uint8_t wait) {
+	int i;
+	
+	for (i=0; i < strip.numPixels(); i++) {
+		strip.setPixelColor(i, c);
+		strip.show();
+		delay(wait);
+	}
+}
+
+/* Helper functions */
+
+// Create a 24 bit color value from R,G,B
+uint32_t Color(byte r, byte g, byte b)
 {
-  // Not used.  See note in setup() function.
+	uint32_t c;
+	c = r;
+	c <<= 8;
+	c |= g;
+	c <<= 8;
+	c |= b;
+	return c;
+}
+
+//Input a value 0 to 255 to get a color value.
+//The colours are a transition r - g -b - back to r
+uint32_t Wheel(byte WheelPos)
+{
+	if (WheelPos < 85) {
+		return Color(WheelPos * 3, 255 - WheelPos * 3, 0);
+		} else if (WheelPos < 170) {
+		WheelPos -= 85;
+		return Color(255 - WheelPos * 3, 0, WheelPos * 3);
+		} else { 
+		WheelPos -= 170;
+		return Color(0, WheelPos * 3, 255 - WheelPos * 3);
+	}
 }
